@@ -1,28 +1,74 @@
+"""Query Sentinel AI — FastAPI application entry point."""
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-from app.models import ChatRequest, ChatResponse, HealthResponse, QueryPreview
-from app.services.llm import QueryTranslator
+from app.models import HealthResponse
+from app.routes.alerts import router as alerts_router
+from app.routes.chat import router as chat_router
+from app.routes.chat import translator
+from app.routes.dashboard import router as dashboard_router
+from app.routes.hunt import router as hunt_router
 
-app = FastAPI(title="Query Sentinel AI", version="0.2.0")
-translator = QueryTranslator()
-
-
-@app.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
-    return HealthResponse(status="ok", service="query-sentinel-ai")
-
-
-@app.post("/translate", response_model=QueryPreview)
-def translate(request: ChatRequest) -> QueryPreview:
-    return translator.translate(request.message)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
-@app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> ChatResponse:
-    preview = translator.translate(request.message)
-    return ChatResponse(
-        answer=preview.summary,
-        query=preview.query,
-        explanation=preview.explanation,
-        model=preview.model,
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Log active provider and model name on startup."""
+    logger.info(
+        "Query Sentinel AI starting up — provider: %s | model: %s",
+        type(translator.provider).__name__,
+        translator.model_name,
     )
+    yield
+    logger.info("Query Sentinel AI shutting down.")
+
+
+app = FastAPI(
+    title="Query Sentinel AI",
+    version="0.3.0",
+    description=(
+        "Open-source explainable AI investigation copilot for Wazuh SIEM. "
+        "Translates natural-language questions into Elasticsearch DSL queries and "
+        "produces structured threat-intelligence reports."
+    ),
+    lifespan=lifespan,
+)
+
+# ---------------------------------------------------------------------------
+# CORS — allow all origins for development; tighten in production.
+# ---------------------------------------------------------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ---------------------------------------------------------------------------
+# Routers
+# ---------------------------------------------------------------------------
+app.include_router(chat_router)
+app.include_router(alerts_router)
+app.include_router(dashboard_router)
+app.include_router(hunt_router)
+
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
+@app.get("/health", response_model=HealthResponse, tags=["health"])
+async def health() -> HealthResponse:
+    """Liveness probe — always returns 200 OK when the service is running."""
+    return HealthResponse(status="ok", service="query-sentinel-ai")
